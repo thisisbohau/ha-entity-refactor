@@ -77,6 +77,9 @@ class ScanResult:
     # "rejected, nothing touched" from "ran, but some steps reported errors" --
     # the caller must still finish the job in the second case.
     applied: bool = False
+    # True when the caller asked for a registry-only save, so no file, helper,
+    # dashboard or energy reference was rewritten.
+    references_skipped: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -90,6 +93,7 @@ class ScanResult:
             "total": sum(c.count for c in self.changes),
             "backup": self.backup,
             "applied": self.applied,
+            "references_skipped": self.references_skipped,
         }
 
 
@@ -434,9 +438,16 @@ async def async_apply(
     hass: HomeAssistant,
     renames: list[dict[str, Any]],
     dashboards: dict[str, Any] | None = None,
+    skip_references: bool = False,
 ) -> ScanResult:
-    """Apply the batch. Backs up first; aborts entirely if validation fails."""
+    """Apply the batch. Backs up first; aborts entirely if validation fails.
+
+    With `skip_references`, only the entity registry is written -- no YAML,
+    helper, dashboard or energy rewriting. The caller is responsible for any
+    references to a renamed ID.
+    """
     result = ScanResult()
+    result.references_skipped = skip_references
     mapping, errors = validate(hass, renames)
     meta_ops, meta_errors = build_ops(hass, renames)
     result.errors = errors + meta_errors
@@ -449,7 +460,11 @@ async def async_apply(
     # Enumerate YAML up front so the backup covers exactly what we may write.
     # If the backup fails this raises, and it raises before anything has been
     # written -- which is the direction we want to fail in.
-    files = await hass.async_add_executor_job(_iter_yaml_files, config_dir)
+    # A registry-only save touches no YAML, so there is nothing to snapshot
+    # beyond .storage.
+    files = [] if skip_references else await hass.async_add_executor_job(
+        _iter_yaml_files, config_dir
+    )
     result.backup = await async_create_backup(hass, files)
 
     # Past this point something will be written, so every later error is a
@@ -497,9 +512,10 @@ async def async_apply(
     for op in remaining:
         result.changes.append(_metadata_change(op))
 
-    if not mapping:
-        # Metadata-only batch: nothing references a friendly name or a label,
-        # so skip the file scan and the reloads entirely.
+    if skip_references or not mapping:
+        # Either the caller asked for a registry-only save, or this is a
+        # metadata-only batch -- nothing references a friendly name or a label,
+        # so the file scan and the reloads have nothing to do.
         return result
 
     # 2. YAML text rewrite.

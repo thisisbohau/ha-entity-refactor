@@ -312,6 +312,8 @@ class EntityRenamerPanel extends HTMLElement {
     this._areas = new Map();
     this._labels = new Map(); // label_id -> {label_id, name}
     this._categories = []; // {scope, category_id, name}
+    this._orphans = []; // registry entries nothing is providing
+    this._orphanWarnings = [];
     this._edits = new Map(); // entity_id -> partial override
     this._selected = new Set();
     this._open = new Set();
@@ -354,6 +356,7 @@ class EntityRenamerPanel extends HTMLElement {
 
       await this._loadLabels();
       await this._loadCategories();
+      await this._loadOrphans();
 
       this._loaded = true;
       this._renderList();
@@ -395,6 +398,129 @@ class EntityRenamerPanel extends HTMLElement {
         /* scope unsupported or empty */
       }
     }
+  }
+
+  /** Registry entries no integration is providing any more. */
+  async _loadOrphans() {
+    try {
+      const result = await this._hass.callWS({ type: "entity_renamer/orphans" });
+      this._orphans = result.orphans || [];
+      this._orphanWarnings = result.warnings || [];
+    } catch {
+      this._orphans = [];
+      this._orphanWarnings = [];
+    }
+
+    const button = this.shadowRoot.getElementById("cleanup");
+    if (!button) return;
+    button.hidden = this._orphans.length === 0;
+    button.textContent = `Clean up ${this._orphans.length} orphaned…`;
+  }
+
+  _openCleanup() {
+    const orphans = this._orphans || [];
+    const rows = orphans
+      .map(
+        (o, index) => `
+        <tr>
+          <td><input type="checkbox" data-orphan="${index}" checked /></td>
+          <td>${this._escape(o.entity_id)}</td>
+          <td class="k">${this._escape(o.name || "—")}</td>
+          <td class="k">${this._escape(o.platform)}</td>
+          <td class="k">${this._escape(o.reason)}</td>
+        </tr>`
+      )
+      .join("");
+
+    const body = `
+      <div class="banner warn">
+        These entities are in the registry but <strong>nothing is providing
+        them</strong> — usually the leftovers of a removed integration. Deleting
+        one frees its entity ID.
+        <br /><br />
+        This <strong>cannot be undone from the panel</strong>. A backup of
+        <code>.storage</code> is written first. Recorder history for these
+        entities is not deleted, but it is no longer reachable.
+        <br /><br />
+        Disabled entities are never listed here, and every entity is re-checked
+        server-side at deletion — if one has come back to life, it is skipped.
+      </div>
+      ${
+        (this._orphanWarnings || []).length
+          ? `<div class="banner warn">${this._orphanWarnings
+              .map((w) => this._escape(w))
+              .join("<br />")}</div>`
+          : ""
+      }
+      <div style="margin-bottom:8px">
+        <label class="cb"><input type="checkbox" id="orphanAll" checked /> Select all</label>
+      </div>
+      <table class="ptable">
+        <tr><td></td><td class="k">Entity ID</td><td class="k">Name</td><td class="k">Integration</td><td class="k">Why</td></tr>
+        ${rows}
+      </table>
+    `;
+
+    this._showDialog(`${orphans.length} orphaned entities`, body, [
+      { label: "Cancel", action: () => this._closeDialog() },
+      { label: "Delete selected", primary: true, action: () => remove() },
+    ]);
+
+    const root = this._dialog;
+    const boxes = () => [...root.querySelectorAll("[data-orphan]")];
+    root.querySelector("#orphanAll").addEventListener("change", (ev) => {
+      for (const box of boxes()) box.checked = ev.target.checked;
+    });
+
+    const remove = async () => {
+      const ids = boxes()
+        .filter((box) => box.checked)
+        .map((box) => orphans[Number(box.dataset.orphan)].entity_id);
+
+      if (!ids.length) {
+        this._closeDialog();
+        return;
+      }
+
+      this._showDialog("Removing…", `<div class="spinner">Backing up and removing…</div>`, []);
+      try {
+        const result = await this._hass.callWS({
+          type: "entity_renamer/remove_orphans",
+          entity_ids: ids,
+        });
+
+        const parts = [
+          `<div class="banner ok"><strong>Removed ${result.removed.length} entit${
+            result.removed.length === 1 ? "y" : "ies"
+          }.</strong>${
+            result.backup ? ` Backup: <code>${this._escape(result.backup)}</code>.` : ""
+          }</div>`,
+        ];
+        if (result.errors.length) {
+          parts.push(
+            `<div class="banner warn"><strong>Skipped:</strong><ul>${result.errors
+              .map((e) => `<li>${this._escape(e)}</li>`)
+              .join("")}</ul></div>`
+          );
+        }
+        if (result.removed.length) {
+          parts.push(
+            `<pre>${result.removed.map((e) => this._escape(e)).join("\n")}</pre>`
+          );
+        }
+
+        this._showDialog("Cleanup complete", parts.join(""), [
+          { label: "Close", primary: true, action: () => this._closeDialog() },
+        ]);
+        await this._load();
+      } catch (err) {
+        this._showDialog(
+          "Failed",
+          `<div class="banner error">${this._escape(err.message || String(err))}</div>`,
+          [{ label: "Close", primary: true, action: () => this._closeDialog() }]
+        );
+      }
+    };
   }
 
   async _collectDashboards() {
@@ -547,6 +673,7 @@ class EntityRenamerPanel extends HTMLElement {
             <input type="search" id="q" placeholder="Search entity ID, name, device, integration or label…" />
           </div>
           <div class="hint" id="hint"></div>
+          <button class="action secondary" id="cleanup" hidden></button>
         </div>
         <div id="selbar"></div>
         <div class="list" id="list"><div class="spinner">Loading entity registry…</div></div>
@@ -557,6 +684,10 @@ class EntityRenamerPanel extends HTMLElement {
     this.shadowRoot.getElementById("menu").addEventListener("click", () => {
       this.dispatchEvent(new Event("hass-toggle-menu", { bubbles: true, composed: true }));
     });
+
+    this.shadowRoot
+      .getElementById("cleanup")
+      .addEventListener("click", () => this._openCleanup());
 
     const search = this.shadowRoot.getElementById("q");
     let timer = null;
@@ -1156,6 +1287,7 @@ class EntityRenamerPanel extends HTMLElement {
     const count = dirty.length;
     const invalid = this._invalidCount();
     const renames = dirty.filter((e) => this._current(e).entity_id !== e.entity_id).length;
+    const ready = count && !invalid && !this._busy ? "" : "disabled";
 
     footer.innerHTML = `
       <div class="hint">${
@@ -1167,12 +1299,10 @@ class EntityRenamerPanel extends HTMLElement {
       }</div>
       <div class="spacer"></div>
       <button class="action secondary" id="clear" ${count ? "" : "disabled"}>Discard edits</button>
-      <button class="action secondary" id="preview" ${
-        count && !invalid && !this._busy ? "" : "disabled"
-      }>Preview changes</button>
-      <button class="action" id="apply" ${
-        count && !invalid && !this._busy ? "" : "disabled"
-      }>Update and replace all references</button>
+      <button class="action secondary" id="preview" ${ready}>Preview changes</button>
+      <button class="action secondary" id="save" ${ready}
+              title="Write the registry only — does not update references">Save entity changes</button>
+      <button class="action" id="apply" ${ready}>Update and replace all references</button>
     `;
 
     footer.querySelector("#clear").addEventListener("click", () => {
@@ -1181,7 +1311,53 @@ class EntityRenamerPanel extends HTMLElement {
       this._renderFooter();
     });
     footer.querySelector("#preview").addEventListener("click", () => this._run(false));
+    footer.querySelector("#save").addEventListener("click", () => this._confirmSaveOnly());
     footer.querySelector("#apply").addEventListener("click", () => this._run(true));
+  }
+
+  /**
+   * Registry-only save. Harmless for names, labels and categories -- nothing
+   * outside the registry refers to them. For an ID rename it is the exact
+   * footgun this integration exists to prevent, so that case is spelled out
+   * before it happens.
+   */
+  _confirmSaveOnly() {
+    const renames = this._dirtyEntities().filter(
+      (e) => this._current(e).entity_id !== e.entity_id
+    );
+
+    const warning = renames.length
+      ? `<div class="banner error">
+           <strong>${renames.length} entity ID${renames.length === 1 ? "" : "s"} will be renamed
+           without updating any references.</strong>
+           Automations, scripts, scenes, dashboards, helpers and templates that
+           point at the old ID will silently stop working.
+           <br /><br />
+           Use <em>Update and replace all references</em> instead unless you know
+           nothing refers to these entities.
+           <pre>${renames
+             .map(
+               (e) =>
+                 `${this._escape(e.entity_id)} → ${this._escape(this._current(e).entity_id)}`
+             )
+             .join("\n")}</pre>
+         </div>`
+      : `<div class="banner ok">
+           Only names, labels and categories are changing. Nothing outside the
+           entity registry refers to those, so there is nothing to rewrite.
+         </div>`;
+
+    this._showDialog("Save entity changes only", warning, [
+      { label: "Cancel", action: () => this._closeDialog() },
+      {
+        label: renames.length ? "Rename anyway, without references" : "Save changes",
+        primary: true,
+        action: () => {
+          this._closeDialog();
+          this._run(true, true);
+        },
+      },
+    ]);
   }
 
   /* ----------------------------------------------------------- actions */
@@ -1202,21 +1378,31 @@ class EntityRenamerPanel extends HTMLElement {
     });
   }
 
-  async _run(apply) {
+  async _run(apply, skipReferences = false) {
     this._busy = true;
     this._renderFooter();
     this._showDialog(
       apply ? "Applying changes…" : "Scanning…",
-      `<div class="spinner">Reading dashboards, YAML files, helpers and the energy dashboard…</div>`,
+      `<div class="spinner">${
+        skipReferences
+          ? "Writing the entity registry…"
+          : "Reading dashboards, YAML files, helpers and the energy dashboard…"
+      }</div>`,
       []
     );
 
     try {
-      const { configs, skipped } = await this._collectDashboards();
+      // A registry-only save rewrites no dashboards, so there is no reason to
+      // pull every dashboard config over the wire first.
+      const { configs, skipped } = skipReferences
+        ? { configs: {}, skipped: [] }
+        : await this._collectDashboards();
+
       const result = await this._hass.callWS({
         type: apply ? "entity_renamer/apply" : "entity_renamer/preview",
         renames: this._payload(),
         dashboards: configs,
+        skip_references: skipReferences,
       });
 
       // Key the follow-up on `applied`, not on the error list. An apply that
@@ -1279,6 +1465,12 @@ class EntityRenamerPanel extends HTMLElement {
           result.backup ? ` Backup: <code>${this._escape(result.backup)}</code>.` : ""
         }</div>`
       );
+      if (result.references_skipped) {
+        parts.push(
+          `<div class="banner warn">Registry only — no references were rewritten,
+           and nothing was reloaded.</div>`
+        );
+      }
     }
 
     const warnings = [...(result.warnings || []), ...skipped, ...dashboardFailures];

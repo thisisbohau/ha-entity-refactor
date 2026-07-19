@@ -21,7 +21,11 @@ everything:
 - a **batch editor** for the selection (see below)
 - **Preview changes** — a dry run showing every file and object that would be
   touched, with before/after lines
+- **Save entity changes** — writes the registry only, without touching
+  references (see below)
 - **Update and replace all references** — applies the whole batch
+- **Clean up orphaned entities** — removes registry entries left behind by
+  deleted integrations (see below)
 
 Everything is staged locally. The batch editor, per-row tweaks and manual edits
 are all the same kind of pending change, so you can mix them freely, undo any
@@ -64,6 +68,46 @@ and the same single Apply.
   category replaces any existing one.
 - `entity_category` (Config / Diagnostic) is deliberately **not** editable: it is
   integration-defined behaviour, not user metadata.
+
+## Save entity changes (registry only)
+
+The **Save entity changes** button writes the entity registry and stops there —
+no YAML, dashboards, helpers or energy preferences are touched, and nothing is
+reloaded.
+
+For **names, labels and categories** this is the natural choice: nothing outside
+the registry refers to them, so there is nothing to rewrite.
+
+For an **entity ID rename** it is the exact footgun this integration exists to
+prevent — automations, scripts, dashboards and templates pointing at the old ID
+will silently stop working. The panel therefore shows a red confirmation listing
+every affected rename before it proceeds. Use it only when you know nothing
+refers to those entities.
+
+## Cleaning up orphaned entities
+
+Deleted an integration and its entities are still cluttering every picker (and
+holding on to the IDs you want)? The toolbar shows **Clean up N orphaned…**
+whenever such entries exist.
+
+An entity is treated as orphaned when no integration is backing it. Home
+Assistant writes an `unavailable` state with a `restored: true` attribute for
+exactly these, which is what the detection keys on.
+
+Deliberately **not** listed:
+
+- **Disabled entities** — they have no state by design; deleting them would
+  destroy a decision you made on purpose.
+- **Offline devices** — an unavailable-but-backed entity still has a real state,
+  so a Shelly that is merely unplugged is never offered for deletion.
+- **Anything, during startup** — before startup completes almost nothing has a
+  state, so the scan refuses to run and says so.
+
+Safety: a `.storage` backup is written first, and every entity is **re-checked
+server-side at deletion time**. The panel's list is treated as a request, not an
+instruction — if an entity has come back to life since the list was built, it is
+skipped and reported rather than deleted. Removal cannot be undone from the
+panel; recorder history is not deleted but becomes unreachable.
 
 ## What gets updated
 
@@ -170,6 +214,8 @@ node tests/test_batch_ops.mjs        # batch editor operations, ID rule, categor
   temporary `/config` tree before and after), that excluded directories are
   never touched, and that validation rejects what it should. Home Assistant is
   stubbed rather than installed.
+- `tests/test_orphans.py` — orphan detection and removal, weighted towards the
+  entities that must *never* be deleted (disabled, offline, live, mid-startup).
 - `tests/test_batch_ops.mjs` — slices the pure-function section out of the real
   panel source and evaluates it, so it exercises the shipped code, not a copy.
 
