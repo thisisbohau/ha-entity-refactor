@@ -1,0 +1,14 @@
+{
+  "domain": "entity_renamer",
+  "name": "Entity ID Renamer",
+  "after_dependencies": ["lovelace", "energy"],
+  "codeowners": ["@thisisbohau"],
+  "config_flow": true,
+  "dependencies": ["http", "websocket_api", "frontend", "panel_custom"],
+  "documentation": "https://github.com/thisisbohau/ha-entity-refactor",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/thisisbohau/ha-entity-refactor/issues",
+  "single_config_entry": true,
+  "version": "1.0.0"
+}

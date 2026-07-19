@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Entity ID Renamer",
+        "description": "Adds an 'Entity Renamer' page to your sidebar. There is nothing to configure — just click Submit.\n\nEvery apply run writes a timestamped backup of `.storage` and your YAML files to `/config/entity_renamer_backups/` first."
+      }
+    },
+    "abort": {
+      "already_configured": "Entity ID Renamer is already set up."
+    }
+  }
+}
