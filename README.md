@@ -75,9 +75,10 @@ and the same single Apply.
 | Lovelace storage dashboards | `lovelace/config/save` websocket API |
 | Energy dashboard | Energy manager API |
 
-After applying, `automation.reload`, `script.reload`, `scene.reload`,
-`template.reload` and `reload_core_config` run automatically, so most changes
-take effect without a restart.
+After applying, `homeassistant.reload_all` and `homeassistant.reload_core_config`
+run automatically, so most changes take effect without a restart. On cores
+without `reload_all`, it falls back to reloading `automation`, `script`, `scene`
+and `template` individually.
 
 ### Deliberately not touched
 
@@ -174,3 +175,7 @@ node tests/test_batch_ops.mjs        # batch editor operations, ID rule, categor
 
 Both suites run in CI along with `hassfest` and HACS validation
 (`.github/workflows/validate.yml`).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
